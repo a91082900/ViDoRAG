@@ -70,11 +70,44 @@ python ./scripts/pdf2images.py
 ```
 
 Optionally, you can use OCR models or Vision-Language Models (VLMs) to recognize text within images:
-```python
-## triditional OCR models
-python ./scripts/ocr_triditional.py 
-## VLMs as ocr models (Optional)
-python ./scripts/ocr_vlms.py 
+```bash
+# Traditional OCR uses a separate Python 3.10 environment because its
+# FastDeploy wheel does not support newer Python versions.
+conda create -n vidorag-ocr python=3.10
+conda activate vidorag-ocr
+python -m pip install -r requirements-ocr.txt
+
+# Download the English PP-OCRv3 inference models and dictionary.
+mkdir -p models/ppocr
+cd models/ppocr
+curl -LO https://paddleocr.bj.bcebos.com/PP-OCRv3/english/en_PP-OCRv3_det_infer.tar
+curl -LO https://paddleocr.bj.bcebos.com/PP-OCRv3/english/en_PP-OCRv3_rec_infer.tar
+curl -LO https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar
+tar -xf en_PP-OCRv3_det_infer.tar
+tar -xf en_PP-OCRv3_rec_infer.tar
+tar -xf ch_ppocr_mobile_v2.0_cls_infer.tar
+curl -Lo en_dict.txt https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/en_dict.txt
+cd ../..
+
+# Extract text from data/ExampleDataset/img into data/ExampleDataset/ppocr.
+python ./scripts/ocr_triditional.py \
+  --dataset ExampleDataset \
+  --model-root models/ppocr \
+  --device cpu \
+  --cpu-threads 6 \
+  --mkldnn-cache-size 1
+
+# Run OCR over every data/*/img directory. Each worker loads the models once;
+# existing ppocr/*.txt outputs are skipped so interrupted runs can resume.
+python ./scripts/ocr_all_datasets.py \
+  --model-root models/ppocr \
+  --device cpu \
+  --workers 4 \
+  --cpu-threads 6 \
+  --mkldnn-cache-size 1
+
+# VLMs as OCR models (optional)
+python ./scripts/ocr_vlms.py
 ```
 
 

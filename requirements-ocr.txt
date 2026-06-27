@@ -1,0 +1,6 @@
+--find-links https://www.paddlepaddle.org.cn/whl/fastdeploy.html
+
+fastdeploy-python==1.0.7
+numpy==1.26.4
+opencv-python==4.10.0.84
+tqdm

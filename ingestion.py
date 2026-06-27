@@ -16,19 +16,17 @@ from llms.vl_embedding import VL_Embedding
 
 class Ingestion:
     def __init__(self, dataset_dir,input_prefix='ppocr',output_prefix='bge_ingestion',embed_model_name='BAAI/bge-m3'):
-        self.dataset_dir = dataset_dir
-        self.input_dir  = os.path.join(dataset_dir, input_prefix)
-        self.output_dir = os.path.join(dataset_dir, output_prefix)
+        self.input_prefix = input_prefix
+        self.output_prefix = output_prefix
+        self.embed_model_name = embed_model_name
+        self.set_dataset(dataset_dir)
         self.output_file_format = 'document'
         self.chunk_size = 1024
         self.overlap_size = 0
         self.workers = 5
-        self.reader = FlatReader()
-        self.embed_model_name = embed_model_name
         # colqwen/colpali/visrag(openbmb)
         if 'vidore' in embed_model_name or 'openbmb' in embed_model_name: 
             if input_prefix == 'img':
-                self.reader = SimpleDirectoryReader(input_dir = self.input_dir)
                 self.pipeline = IngestionPipeline(transformations=[
                     SimpleFileNodeParser(),
                     VL_Embedding(model=embed_model_name,mode='image')
@@ -59,6 +57,20 @@ class Ingestion:
                                     HuggingFaceEmbedding(model_name=self.embed_model_name,trust_remote_code=True)
                                 ],
                             )
+
+    def set_dataset(self, dataset_dir):
+        """Switch dataset paths without rebuilding the embedding pipeline."""
+        self.dataset_dir = dataset_dir
+        self.input_dir = os.path.join(dataset_dir, self.input_prefix)
+        self.output_dir = os.path.join(dataset_dir, self.output_prefix)
+
+        if (
+            ('vidore' in self.embed_model_name or 'openbmb' in self.embed_model_name)
+            and self.input_prefix == 'img'
+        ):
+            self.reader = SimpleDirectoryReader(input_dir=self.input_dir)
+        else:
+            self.reader = FlatReader()
 
     def ingestion_example(self, input_file, output_file):
         # image
@@ -97,19 +109,21 @@ class Ingestion:
 if __name__ == '__main__':
     root_path = './data'
     # datasets = ['ExampleDataset', 'SlideVQA']
-    from pathlib import Path
     datasets = [d for d in os.listdir(root_path) if os.path.isdir(os.path.join(root_path, d)) and not d.startswith('.')]
-    print(f"Found datasets: {datasets}")
-    exit()
-    for dataset in datasets:
-        dataset_dir = os.path.join(root_path, dataset)
+    # print(f"Found datasets: {datasets}", len(datasets))
 
+    if datasets:
+        first_dataset_dir = os.path.join(root_path, datasets[0])
         # select a embedding model
-        # ingestion = Ingestion(dataset_dir,input_prefix='img',output_prefix='colqwen_ingestion',embed_model_name='vidore/colqwen2-v1.0') # colqwen2
-        # ingestion = Ingestion(dataset_dir,input_prefix='img',output_prefix='colpali_ingestion',embed_model_name='vidore/colpali-v1.2') # colpali
-        # ingestion = Ingestion(dataset_dir,input_prefix='img',output_prefix='visrag_ingestion',embed_model_name='openbmb/VisRAG-Ret') # visrag
-        ingestion = Ingestion(dataset_dir,input_prefix='ppocr',output_prefix='nv_ingestion',embed_model_name='nvidia/NV-Embed-v2') # nv-embed
-        # ingestion = Ingestion(dataset_dir,input_prefix='ppocr',output_prefix='bge_ingestion',embed_model_name='BAAI/bge-m3') # bge-m3
+        # ingestion = Ingestion(first_dataset_dir,input_prefix='img',output_prefix='colqwen_ingestion',embed_model_name='vidore/colqwen2-v1.0') # colqwen2
+        # ingestion = Ingestion(first_dataset_dir,input_prefix='img',output_prefix='colpali_ingestion',embed_model_name='vidore/colpali-v1.2') # colpali
+        # ingestion = Ingestion(first_dataset_dir,input_prefix='img',output_prefix='visrag_ingestion',embed_model_name='openbmb/VisRAG-Ret') # visrag
+        ingestion = Ingestion(first_dataset_dir,input_prefix='ppocr',output_prefix='nv_ingestion',embed_model_name='nvidia/NV-Embed-v2') # nv-embed
+        # ingestion = Ingestion(first_dataset_dir,input_prefix='ppocr',output_prefix='bge_ingestion',embed_model_name='BAAI/bge-m3') # bge-m3
 
-        # run
-        ingestion.ingestion_multi_session()
+        for index, dataset in enumerate(datasets):
+            if index > 0:
+                ingestion.set_dataset(os.path.join(root_path, dataset))
+
+            # run
+            ingestion.ingestion_multi_session()
