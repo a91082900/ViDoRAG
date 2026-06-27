@@ -98,7 +98,7 @@ class SearchEngine:
             else:
                 self.vector_embed_model = VL_Embedding(model=embed_model_name, mode='text')
         else:
-            self.vector_embed_model = HuggingFaceEmbedding(model_name=self.embed_model_name, embed_batch_size=10, max_length=512, trust_remote_code=True, device='cuda')
+            self.vector_embed_model = HuggingFaceEmbedding(model_name=self.embed_model_name, embed_batch_size=1, max_length=512, trust_remote_code=True, device='cuda:0', model_kwargs={"torch_dtype": torch.float16})
         self.recall_num = 100
         self.query_engine = self.load_query_engine()
         self.output_dir = os.path.join(self.dataset_dir, 'search_output')

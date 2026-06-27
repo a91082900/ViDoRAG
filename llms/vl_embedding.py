@@ -95,7 +95,7 @@ class VL_Embedding(MultiModalEmbedding):
             self.embed_model = ColQwen2.from_pretrained(
                 model,
                 torch_dtype=torch.bfloat16,
-                device_map="cuda",  # or "mps" if on Apple Silicon
+                device_map="cuda:1",  # or "mps" if on Apple Silicon
             ).eval()
             self.processor = ColQwen2Processor.from_pretrained(model)
         elif "vidore" in model and "pali" in model:

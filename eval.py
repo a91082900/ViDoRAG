@@ -25,19 +25,24 @@ class MMRAG:
                 embed_model_name_vl=None, # openbmb/VisRAG-Ret vidore/colqwen2-v1.0
                 embed_model_name_text=None, # nvidia/NV-Embed-v2 BAAI/bge-m3
                 workers_num = 1,
-                topk=10):
+                topk=10,
+                vllm_base_url=None,
+                vllm_api_key=None):
         self.experiment_type = experiment_type
         self.workers_num = workers_num
         self.top_k = topk
         self.dataset = dataset
         self.query_file = query_file
+        self.generate_vlm = generate_vlm
+        self.vllm_base_url = vllm_base_url
+        self.vllm_api_key = vllm_api_key
         self.dataset_dir = os.path.join('./data', dataset)
         self.img_dir = os.path.join(self.dataset_dir, "img")
         self.results_dir = os.path.join(self.dataset_dir, "results")
         os.makedirs(self.results_dir, exist_ok=True)
 
-        self.vlm = LLM(model_name=generate_vlm)
-        self.evaluator = Evaluator()
+        self.vlm = None
+        # self.evaluator = Evaluator()
         
         # load search_engine
         if embed_model_name_vl is not None and embed_model_name_text is not None:
@@ -59,6 +64,9 @@ class MMRAG:
             self.output_file_name = f'dynamic_hybird_retrieval_{embed_model_name_vl}_{embed_model_name_text}.jsonl'
         # vidorag
         elif experiment_type == 'vidorag':
+            if not generate_vlm.startswith('gpt') and (vllm_base_url is None or vllm_api_key is None):
+                raise ValueError("--vllm_base_url and --vllm_api_key are required when --generate_vlm is not a gpt model.")
+            self.vlm = LLM(model_name=generate_vlm, base_url=vllm_base_url, api_key=vllm_api_key)
             self.agents = ViDoRAG_Agents(self.vlm)
             self.eval_func = self.vidorag
             self.search_engine.gmm = True
@@ -84,9 +92,10 @@ class MMRAG:
             answer = self.agents.run_agent(query, candidate_image)
         except Exception as e:
             print(e)
+            raise e
             return None
         
-        sample['eval_result'] = self.evaluator.evaluate(query, sample['reference_answer'], str(answer))
+        # sample['eval_result'] = self.evaluator.evaluate(query, sample['reference_answer'], str(answer))
         sample['response'] = answer
         sample['recall_results'] = dict(
             source_nodes=[NodeWithScore(node=ImageNode(image_path=image,metadata=dict(file_name=image)), score=None).to_dict() for image in candidate_image],
@@ -172,6 +181,8 @@ def arg_parse():
     parser.add_argument("--embed_model_name_vl", type=str, default=None, help="The name of embedding model for vl")
     parser.add_argument("--embed_model_name_text", type=str, default=None, help="The name of embedding model for text")
     parser.add_argument("--generate_vlm", type=str, default='qwen-vl-max', help="The name of VLM model")
+    parser.add_argument("--vllm_base_url", type=str, default=None, help="The OpenAI-compatible vLLM base URL, e.g. http://localhost:8000/v1")
+    parser.add_argument("--vllm_api_key", type=str, default="EMPTY", help="The vLLM API key. Use EMPTY if your vLLM server does not require authentication")
     args = parser.parse_args()
     return args
 
@@ -186,7 +197,9 @@ if __name__ == "__main__":
         topk=args.topk,
         embed_model_name_vl=args.embed_model_name_vl,
         embed_model_name_text=args.embed_model_name_text,
-        generate_vlm=args.generate_vlm
+        generate_vlm=args.generate_vlm,
+        vllm_base_url=args.vllm_base_url,
+        vllm_api_key=args.vllm_api_key
     )
     mmrag.eval_dataset()
     mmrag.eval_overall()

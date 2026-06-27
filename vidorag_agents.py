@@ -59,7 +59,10 @@ class Seeker:
                 print('seeker')
                 continue
             break
-        
+        print("\n\nSeeker:")
+        print(f"Selected images: {selected_images}")
+        print(f"Summary: {summary}")
+        print(f"Reason: {reason}\n")
         return selected_images, summary, reason
 
 class Inspector:
@@ -110,6 +113,13 @@ class Inspector:
                 answer = response_json.get('answer',None)
                 ref = response_json.get('reference',None)
 
+                print("\n\nInspector:")
+                print(f"Reason: {reason}")
+                print(f"Information: {info}")
+                print(f"Choice: {choice}")
+                print(f"Answer: {answer}")
+                print(f"Reference: {ref}\n")
+
                 if reason is None:
                     raise Exception('answer no reason')
                 elif answer is not None and ref is not None:
@@ -152,6 +162,8 @@ class Synthesizer:
         
         while True:
             final_answer_response = self.vlm.generate(query=prompt,image=input_images)
+            print("\n\nSynthesizer:")
+            print(f"Final Answer Response: ", end="")
             print(final_answer_response)
             try:
                 final_answer_response_json = extract_json(final_answer_response)
