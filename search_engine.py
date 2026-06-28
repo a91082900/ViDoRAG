@@ -228,7 +228,7 @@ class HybridSearchEngine:
         self.dataset = dataset
         self.dataset_dir = os.path.join('./data', dataset)
         self.img_dir = os.path.join(self.dataset_dir, 'img')
-        self.ppocr_dir = os.path.join(self.dataset_dir, 'bge_ingestion')
+        self.ppocr_dir = os.path.join(self.dataset_dir, 'nv_ingestion')
         self.engine_vl = SearchEngine(dataset,node_dir_prefix=node_dir_prefix_vl,embed_model_name=embed_model_name_vl)
         self.engine_text = SearchEngine(dataset,node_dir_prefix=node_dir_prefix_text,embed_model_name=embed_model_name_text)
         self.topk = topk

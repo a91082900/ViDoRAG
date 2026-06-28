@@ -28,6 +28,14 @@ def _image_names(images):
     return [os.path.basename(image) for image in images]
 
 
+def _prompt_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def _validate_image_ids(image_ids, image_count, allow_empty=True):
     if not isinstance(image_ids, list):
         raise InvalidImageIds(image_ids, image_count, allow_empty)
@@ -76,7 +84,11 @@ class Seeker:
             prompt = seeker_prompt.replace('{question}', self.query).replace('{page_map}', self.page_map[len(self.buffer_images)])
         
         elif feedback is not None:
-            additional_information = self.query + '\n\n## Additional Information\n' + feedback
+            additional_information = (
+                self.query
+                + '\n\n## Additional Information\n'
+                + _prompt_text(feedback)
+            )
             prompt = seeker_prompt.replace('{question}', additional_information).replace('{page_map}', self.page_map[len(self.buffer_images)])        
 
         if self.seeker_multi_image:
@@ -320,7 +332,11 @@ class Synthesizer:
 
     def run(self, query, candidate_answer, ref_images):
         if candidate_answer is not None:
-            query = query + '\n\n## Related Information\n' + candidate_answer
+            query = (
+                query
+                + '\n\n## Related Information\n'
+                + _prompt_text(candidate_answer)
+            )
         prompt = answer_prompt.replace('{question}',query).replace('{page_map}',self.page_map[len(ref_images)])
 
         if self.synthesizer_multi_image:
