@@ -10,6 +10,7 @@ from utils.parse_tool import extract_json
 from utils.image_preprosser import concat_images_with_bbox
 
 MAX_AGENT_ATTEMPTS = 3
+MAX_AGENT_IMAGES = max(arrangement_map_dict)
 
 
 class InvalidImageIds(ValueError):
@@ -100,18 +101,19 @@ class Seeker:
         times = 0
         fallback_used = False
         invalid_image_ids = None
+        last_error = None
         retry_for_invalid_ids = False
         while times < MAX_AGENT_ATTEMPTS:
             times += 1
-            if retry_for_invalid_ids:
-                select_response = self.vlm.generate(
-                    query=prompt + _image_id_retry_instruction(len(self.buffer_images)),
-                    image=input_images)
-            else:
-                select_response = self.vlm.generate(query=prompt, image=input_images)
-            retry_for_invalid_ids = False
-            print(select_response)
             try:
+                if retry_for_invalid_ids:
+                    select_response = self.vlm.generate(
+                        query=prompt + _image_id_retry_instruction(len(self.buffer_images)),
+                        image=input_images)
+                else:
+                    select_response = self.vlm.generate(query=prompt, image=input_images)
+                retry_for_invalid_ids = False
+                print(select_response)
                 select_response_json = extract_json(select_response)
                 reason = select_response_json.get('reason', None)
                 summary = select_response_json.get('summary', None)
@@ -139,13 +141,21 @@ class Seeker:
                 self.buffer_images = [image for image in self.buffer_images if image not in selected_images]
 
             except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
                 print('seeker error')
                 print(e)
-                print(select_response)
                 continue
             break
         else:
-            raise Exception('seeker time out')
+            selected_images = list(self.buffer_images)
+            self.buffer_images = []
+            reason = "Seeker attempts exhausted; using all available images."
+            summary = ""
+            fallback_used = True
+            print(
+                "seeker fallback: attempts exhausted; "
+                f"using all {len(selected_images)} images"
+            )
         print("\n\nSeeker:")
         print(f"Selected images: {selected_images}")
         print(f"Summary: {summary}")
@@ -160,7 +170,10 @@ class Seeker:
             "fallback_used": fallback_used,
         }
         if fallback_used:
-            self.last_action["invalid_image_ids"] = invalid_image_ids
+            self.last_action["fallback_reason"] = "seeker_attempts_exhausted"
+            self.last_action["last_error"] = last_error
+            if invalid_image_ids is not None:
+                self.last_action["invalid_image_ids"] = invalid_image_ids
         return selected_images, summary, reason
 
 class Inspector:
@@ -202,17 +215,18 @@ class Inspector:
         prompt = inspector_prompt.replace('{question}',query).replace('{page_map}',self.page_map[len(self.buffer_images)])
 
         times = 0
+        last_error = None
         retry_for_invalid_ids = False
         while times < MAX_AGENT_ATTEMPTS:
             times +=1
 
-            request_prompt = prompt
-            if retry_for_invalid_ids:
-                request_prompt += _image_id_retry_instruction(len(self.buffer_images))
-            response = self.vlm.generate(query=request_prompt,image=input_images)
-            retry_for_invalid_ids = False
-            print(response)
             try:
+                request_prompt = prompt
+                if retry_for_invalid_ids:
+                    request_prompt += _image_id_retry_instruction(len(self.buffer_images))
+                response = self.vlm.generate(query=request_prompt,image=input_images)
+                retry_for_invalid_ids = False
+                print(response)
                 response_json = extract_json(response)
                 # thought
                 reason = response_json.get('reason',None)
@@ -316,10 +330,25 @@ class Inspector:
                     raise Exception('inspector response format error')
             
             except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
                 print(e)
                 print("inspector")
                 continue
-        raise Exception('Inspector time out')
+        print(
+            "inspector fallback: attempts exhausted; "
+            f"sending all {len(self.buffer_images)} images to synthesizer"
+        )
+        self.last_action = {
+            "action": "send_to_synthesizer",
+            "input_images": _image_names(self.buffer_images),
+            "referenced_images": _image_names(self.buffer_images),
+            "candidate_answer": None,
+            "attempts": times,
+            "fallback_used": True,
+            "fallback_reason": "inspector_attempts_exhausted",
+            "last_error": last_error,
+        }
+        return 'synthesizer', None, self.buffer_images
 
 class Synthesizer:
     def __init__(self, vlm):
@@ -344,12 +373,15 @@ class Synthesizer:
         else:
             input_images = [concat_images_with_bbox(ref_images, arrangement=arrangement_map_dict[len(ref_images)], scale=1, line_width=40)]
         
-        while True:
-            final_answer_response = self.vlm.generate(query=prompt,image=input_images)
-            print("\n\nSynthesizer:")
-            print(f"Final Answer Response: ", end="")
-            print(final_answer_response)
+        times = 0
+        last_error = None
+        while times < MAX_AGENT_ATTEMPTS:
+            times += 1
             try:
+                final_answer_response = self.vlm.generate(query=prompt,image=input_images)
+                print("\n\nSynthesizer:")
+                print(f"Final Answer Response: ", end="")
+                print(final_answer_response)
                 final_answer_response_json = extract_json(final_answer_response)
                 reason = final_answer_response_json.get('reason',None)
                 answer = final_answer_response_json.get('answer',None)
@@ -361,13 +393,33 @@ class Synthesizer:
                     "candidate_answer": candidate_answer,
                     "reason": reason,
                     "answer": answer,
+                    "attempts": times,
+                    "fallback_used": False,
                 }
                 return reason, answer
             except Exception as e:
+                last_error = f"{type(e).__name__}: {e}"
                 print(e)
-                print(final_answer_response)
                 print("answer")
                 continue
+        reason = "Synthesizer attempts exhausted; returning the best available answer."
+        answer = (
+            _prompt_text(candidate_answer)
+            if candidate_answer is not None
+            else "Unable to determine the answer from the available evidence."
+        )
+        self.last_action = {
+            "action": "synthesize_answer",
+            "referenced_images": _image_names(ref_images),
+            "candidate_answer": candidate_answer,
+            "reason": reason,
+            "answer": answer,
+            "attempts": times,
+            "fallback_used": True,
+            "fallback_reason": "synthesizer_attempts_exhausted",
+            "last_error": last_error,
+        }
+        return reason, answer
 
 class ViDoRAG_Agents:
     def __init__(self, vlm):
@@ -388,7 +440,29 @@ class ViDoRAG_Agents:
                 **dict(action),
             })
 
+        images_path = list(images_path or [])
+        if not images_path:
+            trace.append({
+                "step": 1,
+                "agent": "seeker",
+                "action": "no_evidence",
+                "input_images": [],
+            })
+            if return_trace:
+                return None, trace
+            return None
+
+        truncated_images = []
+        if len(images_path) > MAX_AGENT_IMAGES:
+            truncated_images = images_path[MAX_AGENT_IMAGES:]
+            images_path = images_path[:MAX_AGENT_IMAGES]
+
         selected_images, summary, reason = self.seeker.run(query=query, images_path=images_path)
+        if truncated_images:
+            self.seeker.last_action["truncated_input_images"] = _image_names(
+                truncated_images
+            )
+            self.seeker.last_action["max_input_images"] = MAX_AGENT_IMAGES
         record("seeker", self.seeker.last_action)
         # iter
         while True:

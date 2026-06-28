@@ -5,7 +5,23 @@ from io import BytesIO
 import threading
 
 
+def auto_resize_image(image, max_pixels=1280*28*28):
+    if isinstance(image, str):
+        image = Image.open(image)
+    if isinstance(image, Image.Image):
+        width, height = image.size
+        total_pixels = width * height
+        if total_pixels > max_pixels:
+            scale = (max_pixels / total_pixels) ** 0.5
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            image = image.resize((new_width, new_height), Image.LANCZOS)
+    else:
+        raise ValueError("Input must be a PIL Image or a valid image file path.")
+    return image
+
 def _encode_image(image_path):
+    image_path = auto_resize_image(image_path)
     if isinstance(image_path, Image.Image):
         buffered = BytesIO()
         image_path.save(buffered, format="JPEG")

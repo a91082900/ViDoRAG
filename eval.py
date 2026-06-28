@@ -235,6 +235,29 @@ class MMRAG:
             f.write("\n")
         os.replace(temporary_path, output_path)
 
+    def _vidorag_failure_result(self, item, error):
+        try:
+            token_usage = self.vlm.get_usage()
+        except Exception:
+            token_usage = {}
+        try:
+            gt_corpus_ids = self._ground_truth_corpus_ids(item)
+        except Exception:
+            gt_corpus_ids = []
+        return {
+            "query": item.get("query"),
+            "answer": None,
+            "retrieved_corpus_ids": [],
+            "gt_corpus_ids": gt_corpus_ids,
+            "token_usage": token_usage,
+            "latency_seconds": None,
+            "trace": [],
+            "error": {
+                "type": type(error).__name__,
+                "message": str(error),
+            },
+        }
+
     def _eval_vidorag_dataset(self, data):
         ordered_ids = self.result_order or [
             str(item.get("id", item.get("uid"))) for item in data
@@ -252,7 +275,14 @@ class MMRAG:
         ]
         if self.workers_num == 1:
             for item in tqdm(pending):
-                result = self.vidorag(item)
+                try:
+                    result = self.vidorag(item)
+                except Exception as error:
+                    print(
+                        f"ViDoRAG sample {item.get('id', item.get('uid'))} failed: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    result = self._vidorag_failure_result(item, error)
                 if result is None:
                     continue
                 results[str(item.get("id", item.get("uid")))] = result
@@ -269,10 +299,17 @@ class MMRAG:
                     total=len(future_to_item),
                     desc="Processing",
                 ):
-                    result = future.result()
+                    item = future_to_item[future]
+                    try:
+                        result = future.result()
+                    except Exception as error:
+                        print(
+                            f"ViDoRAG sample {item.get('id', item.get('uid'))} failed: "
+                            f"{type(error).__name__}: {error}"
+                        )
+                        result = self._vidorag_failure_result(item, error)
                     if result is None:
                         continue
-                    item = future_to_item[future]
                     results[str(item.get("id", item.get("uid")))] = result
                     unsaved += 1
                     if unsaved >= 3:
