@@ -359,7 +359,7 @@ def arg_parse():
     parser.add_argument("--embed_model_name_vl", type=str, default=None, help="The name of embedding model for vl")
     parser.add_argument("--embed_model_name_text", type=str, default=None, help="The name of embedding model for text")
     parser.add_argument("--generate_vlm", type=str, default='qwen-vl-max', help="The name of VLM model")
-    parser.add_argument("--vllm_base_url", type=str, default=None, help="The OpenAI-compatible vLLM base URL, e.g. http://localhost:8000/v1")
+    parser.add_argument("--vllm_base_url", type=str, default="http://localhost:8000/v1", help="The OpenAI-compatible vLLM base URL, e.g. http://localhost:8000/v1")
     parser.add_argument("--vllm_api_key", type=str, default="EMPTY", help="The vLLM API key. Use EMPTY if your vLLM server does not require authentication")
     parser.add_argument("--output_file", type=str, default=None, help="Output JSON path for vidorag")
     parser.add_argument("--all_documents", action="store_true", help="Run every MMDocRAG doc_name in the query JSONL")
