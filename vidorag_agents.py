@@ -9,6 +9,56 @@ from agent.map_dict import arrangement_map_dict,page_map_dict_normal,page_map_di
 from utils.parse_tool import extract_json
 from utils.image_preprosser import concat_images_with_bbox
 
+MAX_AGENT_ATTEMPTS = 3
+
+
+class InvalidImageIds(ValueError):
+    def __init__(self, image_ids, image_count, allow_empty=True):
+        self.image_ids = image_ids
+        self.image_count = image_count
+        self.allow_empty = allow_empty
+        super().__init__(
+            f"invalid image ids {image_ids!r}; expected "
+            f"{'zero or more' if allow_empty else 'one or more'} unique integers "
+            f"between 0 and {image_count - 1}"
+        )
+
+
+def _image_names(images):
+    return [os.path.basename(image) for image in images]
+
+
+def _validate_image_ids(image_ids, image_count, allow_empty=True):
+    if not isinstance(image_ids, list):
+        raise InvalidImageIds(image_ids, image_count, allow_empty)
+
+    validated_ids = []
+    seen_ids = set()
+    for image_id in image_ids:
+        if (
+            isinstance(image_id, bool)
+            or not isinstance(image_id, int)
+            or image_id < 0
+            or image_id >= image_count
+            or image_id in seen_ids
+        ):
+            raise InvalidImageIds(image_ids, image_count, allow_empty)
+        seen_ids.add(image_id)
+        validated_ids.append(image_id)
+
+    if not allow_empty and not validated_ids:
+        raise InvalidImageIds(image_ids, image_count, allow_empty)
+    return validated_ids
+
+
+def _image_id_retry_instruction(image_count):
+    return (
+        "\n\nYour previous response contained invalid image IDs. "
+        f"Use only unique integer IDs from 0 to {image_count - 1}. "
+        "Return the complete response as JSON."
+    )
+
+
 class Seeker:
     def __init__(self, vlm):
         self.vlm = vlm
@@ -33,36 +83,72 @@ class Seeker:
             input_images = self.buffer_images
         else:
             input_images = [concat_images_with_bbox(self.buffer_images, arrangement=arrangement_map_dict[len(self.buffer_images)], scale=1, line_width=40)]
+        source_images = list(self.buffer_images)
 
         times = 0
-        while True:
-            if times > 2:
-                # return None, None, None
-                raise Exception('seeker time out')
+        fallback_used = False
+        invalid_image_ids = None
+        retry_for_invalid_ids = False
+        while times < MAX_AGENT_ATTEMPTS:
             times += 1
-            select_response = self.vlm.generate(query=prompt, image=input_images)
+            if retry_for_invalid_ids:
+                select_response = self.vlm.generate(
+                    query=prompt + _image_id_retry_instruction(len(self.buffer_images)),
+                    image=input_images)
+            else:
+                select_response = self.vlm.generate(query=prompt, image=input_images)
+            retry_for_invalid_ids = False
             print(select_response)
             try:
                 select_response_json = extract_json(select_response)
                 reason = select_response_json.get('reason', None)
                 summary = select_response_json.get('summary', None)
                 select_page_num = select_response_json.get('choice', None)
-                if reason is None or summary is None or any([page >= len(self.buffer_images) for page in select_page_num]):
+                if reason is None or summary is None:
                     raise Exception(f'select json format error: length: {len(self.buffer_images)}')
+                try:
+                    select_page_num = _validate_image_ids(
+                        select_page_num,
+                        len(self.buffer_images),
+                    )
+                except InvalidImageIds as e:
+                    invalid_image_ids = e.image_ids
+                    if times < MAX_AGENT_ATTEMPTS:
+                        retry_for_invalid_ids = True
+                        raise
+                    select_page_num = list(range(len(self.buffer_images)))
+                    fallback_used = True
+                    print(
+                        "seeker image ID fallback: "
+                        f"using all {len(self.buffer_images)} images"
+                    )
 
                 selected_images = [self.buffer_images[page] for page in select_page_num]
                 self.buffer_images = [image for image in self.buffer_images if image not in selected_images]
 
             except Exception as e:
+                print('seeker error')
                 print(e)
                 print(select_response)
-                print('seeker')
                 continue
             break
+        else:
+            raise Exception('seeker time out')
         print("\n\nSeeker:")
         print(f"Selected images: {selected_images}")
         print(f"Summary: {summary}")
         print(f"Reason: {reason}\n")
+        self.last_action = {
+            "action": "select_evidence",
+            "input_images": _image_names(source_images),
+            "selected_images": _image_names(selected_images),
+            "summary": summary,
+            "reason": reason,
+            "attempts": times,
+            "fallback_used": fallback_used,
+        }
+        if fallback_used:
+            self.last_action["invalid_image_ids"] = invalid_image_ids
         return selected_images, summary, reason
 
 class Inspector:
@@ -80,8 +166,18 @@ class Inspector:
     def run(self, query, images_path):
         # answer or not, (images, candidate)/feedback
         if len(self.buffer_images) == 0 and len(images_path) == 0:
+            self.last_action = {
+                "action": "no_evidence",
+                "input_images": [],
+            }
             return None, None, None
         elif len(images_path) == 0:
+            self.last_action = {
+                "action": "send_to_synthesizer",
+                "input_images": _image_names(self.buffer_images),
+                "referenced_images": _image_names(self.buffer_images),
+                "candidate_answer": None,
+            }
             return 'synthesizer', None, self.buffer_images
         elif len(images_path) != 0:
             self.buffer_images.extend(images_path)
@@ -94,13 +190,15 @@ class Inspector:
         prompt = inspector_prompt.replace('{question}',query).replace('{page_map}',self.page_map[len(self.buffer_images)])
 
         times = 0
-        while True:
-            if times >2:
-                raise Exception('Inspector time out')
-                # return None, None, None
+        retry_for_invalid_ids = False
+        while times < MAX_AGENT_ATTEMPTS:
             times +=1
 
-            response = self.vlm.generate(query=prompt,image=input_images)
+            request_prompt = prompt
+            if retry_for_invalid_ids:
+                request_prompt += _image_id_retry_instruction(len(self.buffer_images))
+            response = self.vlm.generate(query=request_prompt,image=input_images)
+            retry_for_invalid_ids = False
             print(response)
             try:
                 response_json = extract_json(response)
@@ -123,23 +221,93 @@ class Inspector:
                 if reason is None:
                     raise Exception('answer no reason')
                 elif answer is not None and ref is not None:
-                    if any([page >= len(self.buffer_images) for page in ref]) or len(ref)==0:
-                        raise Exception('ref error')
+                    fallback_used = False
+                    invalid_image_ids = None
+                    try:
+                        ref = _validate_image_ids(
+                            ref,
+                            len(self.buffer_images),
+                            allow_empty=False,
+                        )
+                    except InvalidImageIds as e:
+                        invalid_image_ids = e.image_ids
+                        if times < MAX_AGENT_ATTEMPTS:
+                            retry_for_invalid_ids = True
+                            raise
+                        ref = list(range(len(self.buffer_images)))
+                        fallback_used = True
+                        print(
+                            "inspector reference fallback: "
+                            f"using all {len(self.buffer_images)} images"
+                        )
                     if len(ref) == len(self.buffer_images):
+                        self.last_action = {
+                            "action": "answer",
+                            "input_images": _image_names(self.buffer_images),
+                            "referenced_images": _image_names(self.buffer_images),
+                            "reason": reason,
+                            "answer": answer,
+                            "attempts": times,
+                            "fallback_used": fallback_used,
+                        }
+                        if fallback_used:
+                            self.last_action["invalid_image_ids"] = invalid_image_ids
                         return 'answer', answer, self.buffer_images
                     else:
                         ref_images = [self.buffer_images[page] for page in ref]
+                        self.last_action = {
+                            "action": "send_to_synthesizer",
+                            "input_images": _image_names(self.buffer_images),
+                            "referenced_images": _image_names(ref_images),
+                            "reason": reason,
+                            "candidate_answer": answer,
+                            "attempts": times,
+                            "fallback_used": fallback_used,
+                        }
+                        if fallback_used:
+                            self.last_action["invalid_image_ids"] = invalid_image_ids
                         return 'synthesizer', answer, ref_images
                 elif info is not None and choice is not None:
-                    if any([page >= len(self.buffer_images) for page in choice]):
-                        raise Exception('choice error')
+                    fallback_used = False
+                    invalid_image_ids = None
+                    try:
+                        choice = _validate_image_ids(
+                            choice,
+                            len(self.buffer_images),
+                        )
+                    except InvalidImageIds as e:
+                        invalid_image_ids = e.image_ids
+                        if times < MAX_AGENT_ATTEMPTS:
+                            retry_for_invalid_ids = True
+                            raise
+                        choice = list(range(len(self.buffer_images)))
+                        fallback_used = True
+                        print(
+                            "inspector choice fallback: "
+                            f"retaining all {len(self.buffer_images)} images"
+                        )
+                    inspected_images = list(self.buffer_images)
                     self.buffer_images = [self.buffer_images[page] for page in choice]
+                    self.last_action = {
+                        "action": "request_more_evidence",
+                        "input_images": _image_names(inspected_images),
+                        "retained_images": _image_names(self.buffer_images),
+                        "reason": reason,
+                        "information_needed": info,
+                        "attempts": times,
+                        "fallback_used": fallback_used,
+                    }
+                    if fallback_used:
+                        self.last_action["invalid_image_ids"] = invalid_image_ids
                     return 'seeker', info, self.buffer_images
+                else:
+                    raise Exception('inspector response format error')
             
             except Exception as e:
                 print(e)
                 print("inspector")
                 continue
+        raise Exception('Inspector time out')
 
 class Synthesizer:
     def __init__(self, vlm):
@@ -171,6 +339,13 @@ class Synthesizer:
                 answer = final_answer_response_json.get('answer',None)
                 if reason is None or answer is None :
                     raise Exception('Synthesizer time out')
+                self.last_action = {
+                    "action": "synthesize_answer",
+                    "referenced_images": _image_names(ref_images),
+                    "candidate_answer": candidate_answer,
+                    "reason": reason,
+                    "answer": answer,
+                }
                 return reason, answer
             except Exception as e:
                 print(e)
@@ -184,25 +359,49 @@ class ViDoRAG_Agents:
         self.inspector = Inspector(vlm)
         self.synthesizer = Synthesizer(vlm)
 
-    def run_agent(self, query, images_path):
+    def run_agent(self, query, images_path, return_trace=False):
         # initial
         self.seeker.buffer_images = None
         self.inspector.buffer_images = []
+        trace = []
+
+        def record(agent, action):
+            trace.append({
+                "step": len(trace) + 1,
+                "agent": agent,
+                **dict(action),
+            })
 
         selected_images, summary, reason = self.seeker.run(query=query, images_path=images_path)
+        record("seeker", self.seeker.last_action)
         # iter
         while True:
             status, information, images = self.inspector.run(query, selected_images)
+            record("inspector", self.inspector.last_action)
             if status == 'answer':
+                if return_trace:
+                    return information, trace
                 return information
             elif status == 'synthesizer':
                 reason, answer = self.synthesizer.run(query, information, images)
+                record("synthesizer", self.synthesizer.last_action)
+                if return_trace:
+                    return answer, trace
                 return answer
             elif status == 'seeker':
+                if not self.seeker.buffer_images:
+                    reason, answer = self.synthesizer.run(query, None, images)
+                    record("synthesizer", self.synthesizer.last_action)
+                    if return_trace:
+                        return answer, trace
+                    return answer
                 selected_images, summary, reason = self.seeker.run(feedback=information)
+                record("seeker", self.seeker.last_action)
                 continue
             else:
                 print('No related information')
+                if return_trace:
+                    return None, trace
                 return None
 
 if __name__ == '__main__':

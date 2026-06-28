@@ -2,6 +2,7 @@ from PIL import Image
 from pathlib import Path
 import base64
 from io import BytesIO
+import threading
 
 
 def _encode_image(image_path):
@@ -20,6 +21,7 @@ class LLM:
     def __init__(self, model_name, base_url=None, api_key=None, max_tokens=1028):
         self.model_name = model_name
         self.max_tokens = max_tokens
+        self._usage_state = threading.local()
 
         from openai import OpenAI
 
@@ -31,7 +33,31 @@ class LLM:
             if api_key is None:
                 raise ValueError("api_key is required when using a non-gpt model through vLLM.")
             self.model = OpenAI(base_url=base_url, api_key=api_key)
-            
+
+    def reset_usage(self):
+        self._usage_state.value = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "requests": 0,
+        }
+
+    def get_usage(self):
+        usage = getattr(self._usage_state, "value", None)
+        if usage is None:
+            self.reset_usage()
+            usage = self._usage_state.value
+        return dict(usage)
+
+    def _record_usage(self, completion):
+        usage = self.get_usage()
+        response_usage = getattr(completion, "usage", None)
+        usage["prompt_tokens"] += int(getattr(response_usage, "prompt_tokens", 0) or 0)
+        usage["completion_tokens"] += int(getattr(response_usage, "completion_tokens", 0) or 0)
+        usage["total_tokens"] += int(getattr(response_usage, "total_tokens", 0) or 0)
+        usage["requests"] += 1
+        self._usage_state.value = usage
+
     def generate(self, **kwargs):
         query = kwargs.get("query", "")
         image = kwargs.get("image", "")
@@ -63,6 +89,7 @@ class LLM:
             ],
             max_tokens=self.max_tokens,
         )
+        self._record_usage(completion)
         return completion.choices[0].message.content
 
 if __name__ == '__main__':

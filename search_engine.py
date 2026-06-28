@@ -233,6 +233,29 @@ class HybridSearchEngine:
         self.engine_text = SearchEngine(dataset,node_dir_prefix=node_dir_prefix_text,embed_model_name=embed_model_name_text)
         self.topk = topk
         self.gmm = gmm
+
+    @staticmethod
+    def _split_file_stem(file_stem):
+        key, separator, page = file_stem.rpartition('_')
+        if not separator or not page.isdigit():
+            raise ValueError(f'Unexpected retrieved file name: {file_stem}')
+        return key, int(page)
+
+    def _add_result_file(self, result_docs, file_stem):
+        key, page = self._split_file_stem(file_stem)
+        if key not in result_docs:
+            result_docs[key] = {}
+        if page not in result_docs[key]:
+            result_docs[key][page] = file_stem
+
+    def _image_path_for_stem(self, file_stem):
+        for suffix in ('.png', '.jpg', '.jpeg'):
+            file_path = os.path.join(self.img_dir, file_stem + suffix)
+            if os.path.isfile(file_path):
+                return file_path
+        raise FileNotFoundError(
+            f'No image found for retrieved file {file_stem} in {self.img_dir}'
+        )
     
     def search(self,query):
         union_result = False
@@ -309,28 +332,15 @@ class HybridSearchEngine:
             for node in result_vl_gmm['source_nodes']:
                 # file = os.path.basename(node['node']['image_path']).split('.')[0]
                 file = '.'.join(os.path.basename(node['node']['image_path']).split('.')[:-1])
-                doc = '_'.join(file.split('_')[:-1])
-                page = file.split('_')[-1]
-                if doc not in result_docs:
-                    result_docs[doc] = [int(page)]
-                else:
-                    if int(page) not in result_docs[doc]:
-                        result_docs[doc].append(int(page))
+                self._add_result_file(result_docs, file)
             for node in result_text_gmm['source_nodes']:
                 # file = node['node']['metadata']['filename'].split('.')[0]
                 file = '.'.join(node['node']['metadata']['filename'].split('.')[:-1])
-                doc = '_'.join(file.split('_')[:-1])
-                page = file.split('_')[-1]
-                if doc not in result_docs:
-                    result_docs[doc] = [int(page)]
-                else:
-                    if int(page) not in result_docs[doc]:
-                        result_docs[doc].append(int(page))
+                self._add_result_file(result_docs, file)
             
             result_docs_list = []
-            for key,pages in result_docs.items():
-                for page in pages:
-                    result_docs_list.append(f'{key}_{page}')
+            for pages in result_docs.values():
+                result_docs_list.extend(pages.values())
             
             result_vl = nodes2dict(result_vl)
             result_text = nodes2dict(result_text)
@@ -339,15 +349,11 @@ class HybridSearchEngine:
             for node in result_vl['source_nodes']:
                 # file = os.path.basename(node['node']['image_path']).split('.')[0]
                 file = '.'.join(os.path.basename(node['node']['image_path']).split('.')[:-1])
-                doc = '_'.join(file.split('_')[:-1])
-                page = file.split('_')[-1]
-                result_docs_vl_list.append(doc+'_'+page)
+                result_docs_vl_list.append(file)
             for node in result_text['source_nodes']:
                 # file = node['node']['metadata']['filename'].split('.')[0]
                 file = '.'.join(node['node']['metadata']['filename'].split('.')[:-1])
-                doc = '_'.join(file.split('_')[:-1])
-                page = file.split('_')[-1]
-                result_docs_text_list.append(doc+'_'+page)
+                result_docs_text_list.append(file)
 
             overleap = [doc for doc in result_docs_vl_list if doc in result_docs_text_list]
             
@@ -359,22 +365,16 @@ class HybridSearchEngine:
             candidate_overleap = candidate_overleap[:target_length-already_length]
 
             for file in candidate_overleap:
-                doc = '_'.join(file.split('_')[:-1])
-                page = file.split('_')[-1]
-                if doc not in result_docs:
-                    result_docs[doc] = [int(page)]
-                else:
-                    if int(page) not in result_docs[doc]:
-                        result_docs[doc].append(int(page))
+                self._add_result_file(result_docs, file)
 
             recall_result = []
-            for key,pages in result_docs.items():
-                pages = sorted(pages)
-                for page in pages:
-                    with open(os.path.join(self.ppocr_dir,f'{key}_{page}.node'),'r') as f:
+            for pages in result_docs.values():
+                for page in sorted(pages):
+                    file_stem = pages[page]
+                    with open(os.path.join(self.ppocr_dir, file_stem + '.node'),'r') as f:
                         text = json.load(f)
                     text = ' '.join([item['text'] for item in text])
-                    file_path = os.path.join(self.img_dir,f'{key}_{page}.jpg')
+                    file_path = self._image_path_for_stem(file_stem)
                     node = ImageNode(image_path=file_path,text=text,metadata=dict(file_name=file_path))
                     recall_result.append(NodeWithScore(node=node,score=None))
             return nodes2dict(recall_result)
