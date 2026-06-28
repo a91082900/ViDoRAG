@@ -54,7 +54,8 @@ class Ingestion:
                                         chunk_overlap=self.overlap_size,
                                         separator=' ',       
                                         paragraph_separator='\n\n\n', secondary_chunking_regex='[^,.;。？！]+[,.;。？！]?'),
-                                    HuggingFaceEmbedding(model_name=self.embed_model_name,trust_remote_code=True)
+                                    HuggingFaceEmbedding(model_name=self.embed_model_name,trust_remote_code=True,
+                                    revision="3fa59658547db50a1e8e3346cf057fd0c77ed6ef" if self.embed_model_name == "nvidia/NV-Embed-v2" else None)
                                 ],
                             )
 
