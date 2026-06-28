@@ -270,8 +270,9 @@ class MMRAG:
                 raise ValueError(f"{self.output_file_path} must contain a JSON object")
 
         pending = [
-            item for item, sample_id in zip(data, ordered_ids)
-            if sample_id not in results
+            item
+            for item in data
+            if str(item.get("id", item.get("uid"))) not in results
         ]
         if self.workers_num == 1:
             for item in tqdm(pending):
